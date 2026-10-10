@@ -116,15 +116,17 @@ const wordPattern = (word: string) =>
 		.split(/\s*[+&]\s*/)
 		.map((piece) => piece.split(/[\s-]+/).map(escape).join("[\\s-]?"))
 		.join(JOINER);
+// Your own words are taken as written ("+" and "&" are just characters), so no word can make matching slow
+const literalWordPattern = (word: string) => word.trim().split(/[\s-]+/).map(escape).join("[\\s-]?");
 
 /**
  * One regex matching any of `words` as whole words, plus raw regex fragments with (`bounded`) or without
  * (`unbounded`) word boundaries.
  */
-const buildRegex = (words: string[], bounded: string[] = [], unbounded: string[] = [], boundary = WORD_CHAR) => {
+const buildRegex = (words: string[], bounded: string[] = [], unbounded: string[] = [], boundary = WORD_CHAR, pattern = wordPattern) => {
 	bounded = [...bounded];
 	unbounded = [...unbounded];
-	for (const word of words) (NO_SPACE_SCRIPT.test(word) ? unbounded : bounded).push(wordPattern(word));
+	for (const word of words) (NO_SPACE_SCRIPT.test(word) ? unbounded : bounded).push(pattern(word));
 	const alternatives: string[] = [];
 	if (bounded.length > 0) alternatives.push(`(?<!${boundary})(?:${bounded.join("|")})(?!${boundary})`);
 	alternatives.push(...unbounded);
@@ -138,7 +140,7 @@ const wordRegex = (words: string[]) => {
 	const key = words.join("\0");
 	if (!regexCache.has(key)) {
 		if (regexCache.size > 50) regexCache.clear();
-		regexCache.set(key, buildRegex(words));
+		regexCache.set(key, buildRegex(words, [], [], WORD_CHAR, literalWordPattern));
 	}
 	return regexCache.get(key);
 };
@@ -328,7 +330,7 @@ const endsWithMix = /(?:mix|edit)\s*$/iu;
 const isCredit = (part: string) => creditRegex.test(part) && !endsWithMix.test(part);
 
 // Names in quotes are titles of something else, e.g. '(Theme from "VIP")' or '(TVアニメ「MIX」オープニングテーマ)'
-const quotedRegex = /"[^"]*"|«[^»]*»|「[^」]*」|『[^』]*』|《[^》]*》|〈[^〉]*〉/g;
+const quotedRegex = /"[^"]*"|«[^«»]*»|「[^「」]*」|『[^『』]*』|《[^《》]*》|〈[^〈〉]*〉/g;
 
 // Unicode dashes become "-", curly quotes become straight ones and "ʀᴇᴍɪx" small capitals become letters
 const replacements: Record<string, string> = {};
@@ -351,7 +353,7 @@ export const normalize = (text: string | undefined | null) => {
 };
 
 // (), [], {}, 【】, 〖〗, 〔〕, ~ ~ and 〜 〜 (a bracket left open at the end of the title counts too)
-const bracketRegex = /\(([^)]*)(?:\)|$)|\[([^\]]*)(?:\]|$)|\{([^}]*)\}|【([^】]*)】|〖([^〗]*)〗|〔([^〕]*)〕|~([^~]+)~|〜([^〜]+)〜/g;
+const bracketRegex = /\(([^)]*)(?:\)|$)|\[([^\]]*)(?:\]|$)|\{([^{}]*)\}|【([^【】]*)】|〖([^〖〗]*)〗|〔([^〔〕]*)〕|~([^~]+)~|〜([^〜]+)〜/g;
 // " - ", "Song -VIP-", "Song- VIP" and " | "
 const dashRegex = /(?:\s-|-\s|\s\|\s)\s*(.+)$/;
 

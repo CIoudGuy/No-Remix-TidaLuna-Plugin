@@ -24,6 +24,11 @@ type WordSetting = "extraWords" | "allowWords";
  */
 const ChoiceListSetting = ({ setting, title, desc }: { setting: "allowedIds" | "remixIds"; title: string; desc: string }) => {
 	const [count, setCount] = React.useState(countIds(settings[setting]));
+	// Right click choices can change while this is open
+	React.useEffect(() => {
+		const interval = setInterval(() => setCount(countIds(settings[setting])), 1000);
+		return () => clearInterval(interval);
+	}, [setting]);
 	return (
 		<LunaButtonSetting
 			title={`${title} (${count})`}

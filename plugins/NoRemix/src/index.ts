@@ -85,6 +85,8 @@ const setOverride = (itemId: redux.ItemId, override: Override) => {
 	remixIds.delete(key(itemId));
 	if (override === "allow") allowedIds.add(key(itemId));
 	if (override === "remix") remixIds.add(key(itemId));
+	// An explicit choice beats "leave it alone"
+	leftAlone.delete(key(itemId));
 	settings.allowedIds = [...allowedIds].join(",");
 	settings.remixIds = [...remixIds].join(",");
 	onSettingsChanged();
@@ -132,13 +134,14 @@ const verdictNow = (itemId: redux.ItemId | undefined | null): string | undefined
 	if (allowedIds.has(id) || isLeftAlone(id)) return "";
 	if (remixIds.has(id)) return "marked as remix";
 
-	const stored = getState().content?.mediaItems?.[id]?.item as TrackInfo | undefined;
+	const storedItem = getState().content?.mediaItems?.[id];
+	const stored = storedItem?.item as TrackInfo | undefined;
 	if (stored?.title !== undefined) {
 		const cached = storeVerdicts.get(stored);
 		if (cached !== undefined) return cached;
 		// Some views store tracks without their version (where "Skrillex Remix" lives): those need fetching,
-		// unless the title alone already says it's a remix
-		const complete = "version" in stored;
+		// unless the title alone already says it's a remix. Videos can't be fetched as tracks, judge what's there.
+		const complete = "version" in stored || storedItem?.type === "video";
 		const word = judge(stored, complete ? stored.version : undefined);
 		if (complete || word !== "") {
 			storeVerdicts.set(stored, word);
@@ -260,7 +263,11 @@ const removeElement = (element: QueueElement) => {
 	trace.log(`Removing ${element.mediaItemId} from the queue`);
 	const before = getQueue().elements.length;
 	redux.actions["playQueue/REMOVE_ELEMENT"]({ uid: element.uid });
-	if (getQueue().elements.length >= before) pendingRemovals.add(element.uid);
+	if (getQueue().elements.length >= before) {
+		pendingRemovals.add(element.uid);
+		// TIDAL ignored it (with TIDAL Connect it's removed once the server confirms)
+		if (!isRemote()) return;
+	}
 	if (removedUids.has(element.uid)) return;
 	if (removedUids.size > 5000) removedUids.clear();
 	removedUids.add(element.uid);
@@ -280,7 +287,7 @@ const removeKnownUpcomingRemixes = () => {
 // Stop TIDAL from lining up a remix in the first place, then make it line up the right track
 const blockedPreloads = { uid: undefined as string | undefined, count: 0 };
 redux.intercept("player/PRELOAD_ITEM", unloads, (product) => {
-	if (unloaded || product?.productId === undefined || isRemote()) return;
+	if (unloaded || product?.productId === undefined || product.productType === "video" || isRemote()) return;
 	const productId = key(product.productId);
 	const linedUp = { productId, referenceId: product.referenceId };
 	const word = verdictNow(productId);
@@ -353,6 +360,16 @@ const pauseIfStillPlaying = (stillStuck: () => boolean, delay: number) => {
 };
 unloads.add(() => clearTimeout(pauseCheck));
 
+// Tracks we just moved off ourselves. The player keeps reporting the old track until the next one has loaded
+// (seconds on a slow connection), that's not a remix playing behind the queue's back.
+const movedOff = new Map<string, number>();
+const markMovedOff = (productId: string) => {
+	const now = Date.now();
+	for (const [id, at] of movedOff) if (now - at > 10_000) movedOff.delete(id);
+	movedOff.set(productId, now);
+};
+const wasMovedOff = (productId: string) => Date.now() - (movedOff.get(productId) ?? 0) < 10_000;
+
 let lastSkipped = { id: "", at: 0, bounces: 0 };
 const skipCurrent = (current: QueueElement, backwards: boolean) => {
 	const id = key(current.mediaItemId);
@@ -364,6 +381,7 @@ const skipCurrent = (current: QueueElement, backwards: boolean) => {
 		return;
 	}
 	if (!canSkip()) return;
+	markMovedOff(id);
 
 	const { elements, currentIndex } = getQueue();
 	if (backwards && currentIndex > 0) {
@@ -390,6 +408,7 @@ let lastGoodUid: string | undefined;
  */
 const fixWrongTrack = (productId: string) => {
 	if (!canSkip()) return;
+	markMovedOff(productId);
 	const { elements, currentIndex, current } = getQueue();
 	const remixIndex = elements.findIndex((el) => key(el.mediaItemId) === productId);
 	const lastGoodIndex = lastGoodUid === undefined ? -1 : elements.findIndex((el) => el.uid === lastGoodUid);
@@ -418,7 +437,8 @@ const fixWrongTrack = (productId: string) => {
 		trace.log(`Remix ${productId} is playing and nothing is left in the queue`);
 		redux.actions["playbackControls/SKIP_NEXT"]();
 	}
-	pauseIfStillPlaying(() => playingProductId() === productId, 4000);
+	// TIDAL needs a moment to load the right track, only give up when there's nothing to play or it never loads
+	pauseIfStillPlaying(() => playingProductId() === productId, target === -1 ? 4000 : 15000);
 };
 // #endregion
 
@@ -441,7 +461,8 @@ const cleanOnce = async () => {
 		scheduleClean(started.at + QUEUE_SYNC_MS - Date.now());
 	} else if (started !== undefined) {
 		startedProduct = undefined;
-		const outOfSync = () => isPlaying() && !isRemote() && started.productId === playingProductId() && key(getQueue().current?.mediaItemId) !== started.productId;
+		const outOfSync = () =>
+			isPlaying() && !isRemote() && !wasMovedOff(started.productId) && started.productId === playingProductId() && key(getQueue().current?.mediaItemId) !== started.productId;
 		if (outOfSync() && (await verdict(started.productId))) {
 			if (unloaded) return;
 			if (outOfSync()) return fixWrongTrack(started.productId);
@@ -483,7 +504,10 @@ const cleanOnce = async () => {
 		// Gone already (e.g. a new queue replaced this one): don't waste a lookup on it
 		if (!isUpcoming(element)) continue;
 		const lookup = verdict(element.mediaItemId);
-		if (!settled && (await within(lookup, SETTLE_DEADLINE_MS)) === TIMED_OUT) settle();
+		if (!settled && (await within(lookup, SETTLE_DEADLINE_MS)) === TIMED_OUT) {
+			if (unloaded) return;
+			settle();
+		}
 		const word = await lookup;
 		if (unloaded) return;
 		if (!word) {
@@ -592,7 +616,9 @@ scheduleClean();
 // #region Right click menu
 try {
 	const menuButton = ContextMenu.addButton(unloads);
+	let openedMenus = 0;
 	ContextMenu.onMediaItem(unloads, async ({ mediaCollection, contextMenu }) => {
+		const menu = ++openedMenus;
 		// Only for a single track
 		const items = (mediaCollection as { tMediaItems?: { item?: { id?: redux.ItemId }; type?: string }[] }).tMediaItems;
 		if (items?.length !== 1 || (items[0].type !== undefined && items[0].type !== "track")) return;
@@ -600,24 +626,33 @@ try {
 		if (itemId === undefined) return;
 
 		const override = getOverride(itemId);
-		const detected = override === undefined && !!(await verdict(itemId));
-		const [text, next, message]: [string, Override, string] =
-			override === "allow"
-				? ["No Remix: stop allowing this track", undefined, "No Remix will decide about this track again"]
-				: override === "remix"
-					? ["No Remix: stop treating as a remix", undefined, "No Remix will decide about this track again"]
-					: detected
-						? ["No Remix: allow this track", "allow", "No Remix will keep this track"]
-						: ["No Remix: treat as a remix", "remix", "No Remix will remove this track"];
-		menuButton.text = text;
-		menuButton.onClick(() => {
-			setOverride(itemId, next);
-			trace.msg.log(message);
-			try {
-				redux.actions["contextMenu/CLOSE"]();
-			} catch {}
-		});
+		const show = (detected: boolean) => {
+			const [text, next, message]: [string, Override, string] =
+				override === "allow"
+					? ["No Remix: stop allowing this track", undefined, "No Remix will decide about this track again"]
+					: override === "remix"
+						? ["No Remix: stop treating as a remix", undefined, "No Remix will decide about this track again"]
+						: detected
+							? ["No Remix: allow this track", "allow", "No Remix will keep this track"]
+							: ["No Remix: treat as a remix", "remix", "No Remix will remove this track"];
+			menuButton.text = text;
+			menuButton.onClick(() => {
+				setOverride(itemId, next);
+				trace.msg.log(message);
+				try {
+					redux.actions["contextMenu/CLOSE"]();
+				} catch {}
+			});
+		};
+		// Show what we know right away, update it if the track still has to be looked up
+		const known = override === undefined ? verdictNow(itemId) : "";
+		show(!!known);
 		await menuButton.show(contextMenu);
+		if (override !== undefined || known !== undefined) return;
+		const detected = !!(await verdict(itemId));
+		// A newer menu was opened meanwhile
+		if (menu !== openedMenus || unloaded) return;
+		show(detected);
 	});
 } catch (err) {
 	trace.err("Failed to add the right click menu", err);

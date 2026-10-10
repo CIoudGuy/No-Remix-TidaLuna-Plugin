@@ -1,5 +1,5 @@
 import { ReactiveStore } from "@luna/core";
-import { LunaSettings, LunaSwitchSetting, LunaTextSetting } from "@luna/ui";
+import { LunaButtonSetting, LunaSettings, LunaSwitchSetting, LunaTextSetting } from "@luna/ui";
 import React from "react";
 
 import { onSettingsChanged } from ".";
@@ -11,9 +11,34 @@ export const settings = await ReactiveStore.getPluginStorage("NoRemix", {
 	keepAnniversaryMixes: true,
 	extraWords: "",
 	allowWords: "",
+	// Track ids you chose with right click -> "No Remix: allow this track" / "treat as a remix"
+	allowedIds: "",
+	remixIds: "",
 });
 
+const countIds = (ids: string) => ids.split(",").filter((id) => id.trim() !== "").length;
+
 type WordSetting = "extraWords" | "allowWords";
+
+/**
+ * Shows how many tracks you picked with the right click menu, with a button to forget them.
+ */
+const ChoiceListSetting = ({ setting, title, desc }: { setting: "allowedIds" | "remixIds"; title: string; desc: string }) => {
+	const [count, setCount] = React.useState(countIds(settings[setting]));
+	return (
+		<LunaButtonSetting
+			title={`${title} (${count})`}
+			desc={desc}
+			disabled={count === 0}
+			onClick={() => {
+				settings[setting] = "";
+				setCount(0);
+				onSettingsChanged();
+			}}
+			children="Clear"
+		/>
+	);
+};
 
 /**
  * Text box that only applies its value when you press Enter or click away,
@@ -77,6 +102,16 @@ export const Settings = () => {
 				setting="allowWords"
 				title="Never remove tracks containing"
 				desc="Comma separated, press Enter to apply. e.g. the name of a remixer you actually like"
+			/>
+			<ChoiceListSetting
+				setting="allowedIds"
+				title="Tracks you allowed"
+				desc={`Right click a track -> "No Remix: allow this track" to always keep it`}
+			/>
+			<ChoiceListSetting
+				setting="remixIds"
+				title="Tracks you marked as remixes"
+				desc={`Right click a track -> "No Remix: treat as a remix" to always remove it`}
 			/>
 		</LunaSettings>
 	);

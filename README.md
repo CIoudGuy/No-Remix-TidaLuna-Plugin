@@ -12,7 +12,7 @@ https://github.com/CIoudGuy/TidaLuna-Plugins/releases/download/latest/store.json
 
 ## No Remix
 
-Removes every remix from your play queue, and skips one if it starts playing.
+Removes every remix from your play queue, and skips one if it starts playing, including remixes TIDAL had already lined up to play next.
 
 **Removed:** tracks whose title or version contains
 - **anywhere:** remix, rmx, mashup, remezcla, ремикс, リミックス, 리믹스
@@ -20,9 +20,12 @@ Removes every remix from your play queue, and skips one if it starts playing.
 
 **Kept:** Original/Extended/Radio Mix, remasters, live, acoustic, instrumentals, radio edits, songs that are just named "Flip" etc., and `(feat. …)` credits. Anniversary mixes like "2019 Mix" or "Dolby Atmos Mix" are kept unless you turn that off.
 
+**Right click a track** → "No Remix: allow this track" to always keep it, or "No Remix: treat as a remix" to always remove it.
+
 **Settings**
 - **Skip remix if it's playing**: on by default
 - **Show notification**: on by default
 - **Keep anniversary mixes**: on by default
 - **Extra words to remove**: e.g. `cover, live`
 - **Never remove tracks containing**: e.g. a remixer you like
+- **Tracks you allowed / marked as remixes**: clear your right click choices

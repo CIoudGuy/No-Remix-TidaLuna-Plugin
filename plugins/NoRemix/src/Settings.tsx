@@ -45,22 +45,31 @@ const ChoiceListSetting = ({ setting, title, desc }: { setting: "allowedIds" | "
 };
 
 /**
- * Text box that only applies its value when you press Enter or click away,
+ * Text box that only applies its value when you press Enter, click away or close the settings,
  * so a half typed word can't remove tracks from the queue.
  */
 const WordListSetting = ({ setting, title, desc }: { setting: WordSetting; title: string; desc: string }) => {
 	const [value, setValue] = React.useState(settings[setting]);
+	// What you typed that isn't applied yet
+	const typed = React.useRef<string | undefined>(undefined);
 	const apply = () => {
-		if (settings[setting] === value) return;
-		settings[setting] = value;
+		const text = typed.current;
+		typed.current = undefined;
+		if (text === undefined || settings[setting] === text) return;
+		settings[setting] = text;
 		onSettingsChanged();
 	};
+	// Closing the settings doesn't always count as clicking away
+	React.useEffect(() => apply, [setting]);
 	return (
 		<LunaTextSetting
 			title={title}
 			desc={desc}
 			value={value}
-			onChange={(e: React.ChangeEvent<HTMLInputElement>) => setValue(e.target.value)}
+			onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+				setValue(e.target.value);
+				typed.current = e.target.value;
+			}}
 			onBlur={apply}
 			onKeyDown={(e: React.KeyboardEvent) => e.key === "Enter" && apply()}
 		/>

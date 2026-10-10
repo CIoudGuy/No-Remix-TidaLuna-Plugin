@@ -24,6 +24,9 @@ export const strongWords = [
 	"8d audio",
 	"chopped & screwed",
 	"chopped not slopped",
+	// Indonesian TikTok remix styles, "DJ Kau Bukan Untukku Jedag Jedug Full Bass"
+	"jedag jedug",
+	"funkot",
 	"ремикс",
 	"ремікс",
 	"リミックス",
@@ -73,6 +76,7 @@ export const qualifierWords = [
 	"re-interpreted",
 	"speed up",
 	"speed version",
+	"super speed",
 	"reverb",
 	"reverbed",
 	"pitched",
@@ -186,7 +190,7 @@ const flipGenres =
 	"(?:hard[\\s-]?|hyper[\\s-]?|melodic[\\s-]?)?techno|hard[\\s-]?style|psy[\\s-]?trance|dubstep|drum[\\s-]*(?:&|and|n|'n')[\\s-]*bass|dnb|d&b|" +
 	"(?:deep|tech|afro|slap|future|bass|big[\\s-]?room)[\\s-]?house|edm|phonk|jersey[\\s-]?club|baile[\\s-]?funk|brazilian[\\s-]?funk|amapiano|" +
 	"moombahton|lo[\\s-]?fi|vinahouse|vaporwave|jungle|(?:uk|speed)[\\s-]?garage|eurodance|hands[\\s-]?up|gabber|frenchcore|breakbeat|discofox" +
-	"|(?:hard[\\s-]?)?tekk|hard[\\s-]?tek|schranz|rawstyle|jumpstyle|happy[\\s-]?hardcore|hard[\\s-]?bass";
+	"|(?:hard[\\s-]?)?tekk|hard[\\s-]?tek|schranz|rawstyle|jumpstyle|happy[\\s-]?hardcore|hard[\\s-]?bass|montagem";
 // Plus everyday words that only mean a flip next to "Version": "(Club Version)", "(Trance Ver.)", "(Versión Dance)".
 // "(Acoustic Version)", "(Salsa Version)" or "(Rock Ver.)" are new recordings of the song and are kept.
 const genres = `${flipGenres}|house|trance|trap|drill|jersey|club|dance|dj|rave|party|electro|ele?c?tr[oóô]nica|electronic`;
@@ -383,15 +387,36 @@ for (const c of "‘’‚‛′") replacements[c] = "'";
 // ...and invisible formatting characters (zero width spaces, soft hyphens, direction marks) are dropped
 const cleanupRegex = new RegExp(`\\p{Cf}|[${Object.keys(replacements).join("")}]`, "gu");
 
+// Cyrillic and Greek letters that look like Latin ones, mixed into a Latin word: "Rеmix" with a Cyrillic "е"
+const lookalikes: Record<string, string> = {};
+const addLookalikes = (from: string, to: string) => [...from].forEach((c, i) => (lookalikes[c] = to[i]));
+addLookalikes("аеорсухіјѕһԁԛԝӏАВЕКМНОРСТХУІЈЅ", "aeopcyxijshdqwlABEKMHOPCTXYIJS");
+addLookalikes("οαικνρτυχΑΒΕΖΗΙΚΜΝΟΡΤΥΧ", "oaikvptuxABEZHIKMNOPTYX");
+const CYRILLIC_OR_GREEK = /[\p{sc=Cyrillic}\p{sc=Greek}]/u;
+const unmixScripts = (word: string) => {
+	if (!/\p{sc=Latin}/u.test(word) || !CYRILLIC_OR_GREEK.test(word)) return word;
+	const latin = [...word].map((c) => lookalikes[c] ?? c).join("");
+	// Only when that makes it a plain Latin word, real words in those alphabets are left alone
+	return CYRILLIC_OR_GREEK.test(latin) ? word : latin;
+};
+// Single letters with spaces or dots between them, "S L O W E D" or "R.E.M.I.X."
+const spacedLettersRegex = /(?<![\p{L}\p{N}.])\p{L}(?:(?: \p{L}){2,}|(?:\.\p{L}){2,}\.?)(?![\p{L}\p{N}])/gu;
+
 /**
  * Unify fullwidth and "fancy text" letters ("ＲＥＭＩＸ", "𝐒𝐩𝐞𝐝 𝐔𝐩", "ʀᴇᴍɪx"), the many unicode dashes ("Re‑Edit",
- * "Song – Remix") and curly quotes, and drop invisible characters (a zero width space inside "Remix").
+ * "Song – Remix") and curly quotes, drop invisible characters (a zero width space inside "Remix"), turn lookalike
+ * letters from other alphabets into Latin ones and join spaced out letters ("R E M I X").
  */
 export const normalize = (text: string | undefined | null) => {
 	text ??= "";
-	// Plain ASCII, most titles, needs none of this
-	if (!/[^\x00-\x7f]/.test(text)) return text;
-	return text.normalize("NFKC").replace(cleanupRegex, (c) => replacements[c] ?? "");
+	// Plain ASCII (most titles) only needs the last step
+	if (/[^\x00-\x7f]/.test(text)) {
+		text = text
+			.normalize("NFKC")
+			.replace(cleanupRegex, (c) => replacements[c] ?? "")
+			.replace(/\p{L}+/gu, unmixScripts);
+	}
+	return text.replace(spacedLettersRegex, (letters) => letters.replace(/[ .]/g, ""));
 };
 
 // (), [], {}, 【】, 〖〗, 〔〕, ~ ~ and 〜 〜 (a bracket left open at the end of the title counts too)
@@ -453,14 +478,18 @@ export interface MatchOptions {
  * Returns the word that marks this track as a remix, or undefined if it isn't one.
  */
 export const remixMatch = (title: string | undefined | null, version: string | undefined | null, opts: MatchOptions = {}): string | undefined => {
+	// Your own words also match the title as written, so "R.E.M." still matches after it became "REM"
+	const asWritten = `${title ?? ""} ${version ?? ""}`;
 	title = normalize(title);
 	version = normalize(version);
 	if (`${title}${version}`.trim() === "") return undefined;
 	const fullText = `${title} ${version}`;
 
-	if (wordRegex(opts.allowWords ?? [])?.test(fullText)) return undefined;
+	const allow = wordRegex(opts.allowWords ?? []);
+	if (allow !== undefined && (allow.test(fullText) || allow.test(asWritten))) return undefined;
 
-	const extra = fullText.match(wordRegex(opts.extraWords ?? []) ?? /$^/);
+	const extraRegex = wordRegex(opts.extraWords ?? []);
+	const extra = extraRegex === undefined ? undefined : (fullText.match(extraRegex) ?? asWritten.match(extraRegex));
 	if (extra) return extra[0];
 
 	// Cut out anniversary mixes ("Come Together - 2019 Mix" -> "Come Together") and single remixes

@@ -59,6 +59,8 @@ const isNext = (element: QueueElement) => {
 };
 
 const isPlaying = () => getState().playbackControls?.desiredPlaybackState === "PLAYING";
+// Repeat all: after the last track the queue starts over, so tracks already played come up again
+const repeatsAll = () => getState().playQueue?.repeatMode === 1;
 
 /**
  * The track TIDAL's player is actually playing. Usually the queue's current track, but not always:
@@ -263,7 +265,8 @@ unloads.add(() => clearTimeout(notifyTimeout));
 
 // #region Lining up the next track
 // What TIDAL last asked its player to line up next. The player plays that even after it's removed from the queue.
-let lastPreload: { productId: string; referenceId?: string } | undefined;
+type LinedUp = { productId: string; referenceId?: string };
+let lastPreload: LinedUp | undefined;
 
 const preloadNext = () => {
 	if (unloaded || isRemote()) return;
@@ -289,13 +292,15 @@ const wasLinedUp = (element: QueueElement) =>
 
 // Entries we removed, so ones another plugin puts back (e.g. RealMAX restoring an old copy of the queue) are removed quietly
 const removedUids = new Set<string>();
-// Entries we asked TIDAL to remove that are still there (it ignored us), not asked again until they leave the queue
-const pendingRemovals = new Set<string>();
-const isRemovalIgnored = (element: QueueElement) => pendingRemovals.has(element.uid);
+// Entries we asked TIDAL to remove that are still there (it ignored us, or TIDAL Connect hasn't confirmed it yet),
+// not asked again for a while
+const pendingRemovals = new Map<string, number>();
+const RETRY_REMOVAL_MS = 30_000;
+const isRemovalIgnored = (element: QueueElement) => Date.now() - (pendingRemovals.get(element.uid) ?? -Infinity) < RETRY_REMOVAL_MS;
 const forgetFinishedRemovals = (elements: QueueElement[]) => {
 	if (pendingRemovals.size === 0) return;
 	const present = new Set(elements.map((el) => el.uid));
-	for (const uid of pendingRemovals) if (!present.has(uid)) pendingRemovals.delete(uid);
+	for (const uid of pendingRemovals.keys()) if (!present.has(uid)) pendingRemovals.delete(uid);
 };
 // A track that keeps coming back right after being removed is being added on purpose (by you or another plugin)
 const recentRemovals = new Map<string, number[]>();
@@ -316,7 +321,13 @@ const removeElement = (element: QueueElement) => {
 	const before = getQueue().elements.length;
 	redux.actions["playQueue/REMOVE_ELEMENT"]({ uid: element.uid });
 	if (getQueue().elements.length >= before) {
-		pendingRemovals.add(element.uid);
+		pendingRemovals.set(element.uid, now);
+		// Try again later if it's still there
+		const retry = setTimeout(() => {
+			retryTimeouts.delete(retry);
+			scheduleClean();
+		}, RETRY_REMOVAL_MS + 100);
+		retryTimeouts.add(retry);
 		// TIDAL ignored it (with TIDAL Connect it's removed once the server confirms)
 		if (!isRemote()) return;
 	}
@@ -336,36 +347,105 @@ const removeKnownUpcomingRemixes = () => {
 	}
 };
 
+/**
+ * With repeat all on the last track, the first track from the start of the queue that isn't a known remix
+ * (tracks already played aren't removed from the queue). Can be the current track itself.
+ */
+const firstGoodFromStart = () => {
+	const { elements, currentIndex } = getQueue();
+	for (let i = 0; i <= currentIndex; i++) if (!verdictNow(elements[i].mediaItemId)) return i;
+	return undefined;
+};
+
+/**
+ * A track was lined up before we knew what it is: look it up right away. An upcoming remix gets removed by the
+ * cleaning pass (which lines up the right track), one from the start of the queue (repeat all) is lined up again.
+ */
+const checkLinedUp = (linedUp: LinedUp, element: QueueElement | undefined) =>
+	verdict(linedUp.productId).then((word) => {
+		scheduleClean(0);
+		if (!word || lastPreload !== linedUp || element === undefined) return;
+		const index = indexOf(element);
+		if (index !== -1 && index < getQueue().currentIndex) preloadNext();
+	});
+
+// Line up a queue entry ourselves, the same way TIDAL does it
+const lineUp = (element: QueueElement, like: redux.MediaProduct) => {
+	const productId = key(element.mediaItemId);
+	const linedUp = { productId, referenceId: element.uid };
+	trace.log(`Lining up queue entry ${indexOf(element)} (${productId}) instead`);
+	try {
+		const productType = getState().content?.mediaItems?.[productId]?.type === "video" ? "video" : "track";
+		// Same id type as TIDAL used
+		const id = typeof like.productId === "string" ? productId : element.mediaItemId;
+		redux.actions["player/PRELOAD_ITEM"]({ ...like, productId: id, productType, referenceId: element.uid });
+	} catch (err) {
+		trace.warn("Failed to line up the next track", err);
+		return;
+	}
+	lastPreload = linedUp;
+	if (verdictNow(productId) === undefined) checkLinedUp(linedUp, element);
+};
+
 // Stop TIDAL from lining up a remix in the first place, then make it line up the right track
-const blockedPreloads = { uid: undefined as string | undefined, count: 0 };
+const blockedPreloads = { uid: undefined as string | undefined, count: 0, at: 0 };
+// The same track can be the last one on every loop of repeat all, so only count blocks close together
+const BLOCK_SERIES_MS = 20_000;
+const tooManyBlocks = (uid: string | undefined) => {
+	const now = Date.now();
+	if (blockedPreloads.uid !== uid || now - blockedPreloads.at > BLOCK_SERIES_MS) {
+		blockedPreloads.uid = uid;
+		blockedPreloads.count = 0;
+	}
+	blockedPreloads.at = now;
+	return ++blockedPreloads.count > 5;
+};
+// With repeat all on the last track, TIDAL lines up the start of the queue next
+const wrapsAround = () => {
+	const { elements, currentIndex } = getQueue();
+	return repeatsAll() && elements.length > 0 && currentIndex === elements.length - 1;
+};
 redux.intercept("player/PRELOAD_ITEM", unloads, (product) => {
 	if (unloaded || product?.productId === undefined || product.productType === "video" || isRemote()) return;
 	const productId = key(product.productId);
 	const linedUp = { productId, referenceId: product.referenceId };
+
+	const { elements, currentIndex, current } = getQueue();
+	const wraps = wrapsAround();
+	// TIDAL tags what it lines up with the queue entry's uid, fall back to the track id
+	const byUid = product.referenceId === undefined ? -1 : elements.findIndex((el) => el.uid === product.referenceId);
+	const index = byUid !== -1 ? byUid : elements.findIndex((el, i) => (i > currentIndex || wraps) && key(el.mediaItemId) === productId);
+	// Repeat all going back to the start of the queue
+	const wrapping = wraps && index !== -1 && index < currentIndex;
+
 	const word = verdictNow(productId);
 	if (!word) {
 		lastPreload = linedUp;
 		// Don't know yet: let it through and look it up right away, it gets fixed up if it's a remix
-		if (word === undefined) verdict(productId).then(() => scheduleClean(0));
+		if (word === undefined) checkLinedUp(linedUp, elements[index]);
 		return;
 	}
 
-	const { elements, currentIndex, current } = getQueue();
-	// TIDAL tags what it lines up with the queue entry's uid, fall back to the track id
-	const byUid = product.referenceId === undefined ? -1 : elements.findIndex((el) => el.uid === product.referenceId);
-	const index = byUid !== -1 ? byUid : elements.findIndex((el, i) => i > currentIndex && key(el.mediaItemId) === productId);
-	// Not an upcoming track (e.g. repeat all wrapping around to the start), or one TIDAL won't let us remove:
-	// the check on what's playing catches it
-	if (index <= currentIndex || isRemovalIgnored(elements[index])) {
-		lastPreload = linedUp;
-		return;
+	if (wrapping) {
+		// Never fight TIDAL forever over the same track
+		if (firstGoodFromStart() === undefined || tooManyBlocks(current?.uid)) {
+			lastPreload = linedUp;
+			return;
+		}
+		trace.log(`Stopped TIDAL from lining up a remix at the start of the queue (${productId})`);
+		const blockedOn = current?.uid;
+		setTimeout(() => {
+			if (unloaded) return;
+			// Still on the same last track (it didn't just end or change)
+			const target = wrapsAround() && getQueue().current?.uid === blockedOn ? firstGoodFromStart() : undefined;
+			if (target !== undefined) lineUp(getQueue().elements[target], product);
+			else preloadNext();
+		});
+		return true;
 	}
-	// Never fight TIDAL forever over the same track
-	if (blockedPreloads.uid !== current?.uid) {
-		blockedPreloads.uid = current?.uid;
-		blockedPreloads.count = 0;
-	}
-	if (++blockedPreloads.count > 5) {
+	// Not an upcoming track, one TIDAL won't let us remove, or TIDAL is still adding a list to the queue (it's
+	// removed and the right track lined up once that's done): the check on what's playing catches it meanwhile
+	if (index <= currentIndex || isRemovalIgnored(elements[index]) || fillWait() > 0 || tooManyBlocks(current?.uid)) {
 		lastPreload = linedUp;
 		return;
 	}
@@ -456,6 +536,12 @@ const skipCurrent = (current: QueueElement, backwards: boolean, target?: number)
 		trace.log("Skipping remix");
 		return PlayState.next();
 	}
+	// Last track with repeat all: straight to the first track at the start that isn't a remix
+	const fromStart = repeatsAll() ? firstGoodFromStart() : undefined;
+	if (fromStart !== undefined && fromStart < currentIndex) {
+		trace.log(`Skipping remix (to queue entry ${fromStart}, repeat all)`);
+		return PlayState.moveTo(fromStart);
+	}
 	// Last track in the queue. Let TIDAL's own next button handle it (autoplay / repeat all),
 	// and if that doesn't move off the remix (autoplay can take a few seconds), pause it.
 	trace.log("Skipping remix (end of queue)");
@@ -487,13 +573,11 @@ const fixWrongTrack = (productId: string) => {
 	// The queue already moved on to the track that should be playing
 	else start = currentIndex;
 
+	const isTarget = (i: number) => key(elements[i].mediaItemId) !== productId && !verdictNow(elements[i].mediaItemId);
 	let target = -1;
-	for (let i = Math.max(start, 0); i < elements.length; i++) {
-		if (key(elements[i].mediaItemId) !== productId && !verdictNow(elements[i].mediaItemId)) {
-			target = i;
-			break;
-		}
-	}
+	for (let i = Math.max(start, 0); i < elements.length && target === -1; i++) if (isTarget(i)) target = i;
+	// Nothing left after it: with repeat all the queue starts over
+	if (target === -1 && repeatsAll()) for (let i = 0; i < Math.min(start, elements.length) && target === -1; i++) if (isTarget(i)) target = i;
 	notify("Skipped a remix TIDAL had already lined up");
 	if (target !== -1) {
 		trace.log(`Remix ${productId} is playing instead of the queue's track, playing queue entry ${target}`);
@@ -660,6 +744,15 @@ const cleanOnce = async () => {
 	}
 	if (unloaded) return;
 	settle();
+
+	// Repeat all starts over after the last track. Tracks already played stay in the queue, so look up the ones at
+	// the start now (up to the first one that isn't a remix) to line up the right one in time
+	if (!repeatsAll()) return;
+	for (const element of getQueue().elements.slice(0, getQueue().currentIndex)) {
+		if (urgentAgain) return;
+		const word = await Promise.race([verdict(element.mediaItemId), interrupted]);
+		if (unloaded || word === INTERRUPTED || !word) return;
+	}
 };
 
 let cleaning = false;
@@ -748,8 +841,9 @@ const onStoreChange = () => {
 		else if (currentEntry !== insistedEntry) insistedEntry = undefined;
 	}
 	if (productId !== last.productId) {
-		// What was lined up is playing now
+		// What was lined up is playing now, and any fight with TIDAL over lining up the next track is over
 		lastPreload = undefined;
+		blockedPreloads.count = 0;
 		if (productId !== undefined) startedProduct = { productId, at: Date.now() };
 	}
 	if (current !== undefined && productId === key(current.mediaItemId) && !verdictNow(productId)) lastGoodUid = current.uid;

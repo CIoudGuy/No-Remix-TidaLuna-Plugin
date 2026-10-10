@@ -3,7 +3,6 @@ import { LunaButtonSetting, LunaSettings, LunaSwitchSetting, LunaTextSetting } f
 import React from "react";
 
 import { onSettingsChanged } from ".";
-import { qualifierWords, strongWords } from "./isRemix";
 
 export const settings = await ReactiveStore.getPluginStorage("NoRemix", {
 	skipCurrent: true,
@@ -96,7 +95,7 @@ export const Settings = () => {
 			<WordListSetting
 				setting="extraWords"
 				title="Extra words to remove"
-				desc={`Comma separated, press Enter to apply. Built in: ${[...strongWords, ...qualifierWords].join(", ")}`}
+				desc="Comma separated, press Enter to apply. Remixes, VIPs, DJ edits, club mixes, sped up, slowed, nightcore and many more are already built in"
 			/>
 			<WordListSetting
 				setting="allowWords"

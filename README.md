@@ -14,11 +14,12 @@ https://github.com/CIoudGuy/TidaLuna-Plugins/releases/download/latest/store.json
 
 Removes every remix from your play queue, and skips one if it starts playing, including remixes TIDAL had already lined up to play next.
 
-**Removed:** tracks whose title or version contains
-- **anywhere:** remix, rmx, mashup, remezcla, ремикс, リミックス, 리믹스
-- **in brackets or after " - ":** mix, VIP, dub, flip, bootleg, rework, re-edit, refix, re-imagined, sped up, slowed, nightcore, daycore, 8D
+**Removed:** tracks whose title or version marks them as a remix or remix-like version:
+- remix, rmx, mashup, megamix, VIP, dub, bootleg, flip, rework, re-edit, DJ/producer edits ("Kygo Edit", "Club Edit"), club and DJ mixes
+- sped up, slowed + reverb, nightcore, daycore, 8D audio, bass boosted, chopped & screwed, TikTok/club/dance versions, DJ genre versions like "(Techno)" or "(Phonk)"
+- the same in other languages (Spanish, Russian, Japanese, Korean, Chinese, Arabic, ...)
 
-**Kept:** Original/Extended/Radio Mix, remasters, live, acoustic, instrumentals, radio edits, songs that are just named "Flip" etc., and `(feat. …)` credits. Anniversary mixes like "2019 Mix" or "Dolby Atmos Mix" are kept unless you turn that off.
+**Kept:** Original/Extended/Radio Mix, Radio/Single/Album Edit, remasters, live, acoustic, instrumentals, vocal mixes, single remixes, songs that are just named "Flip" etc., and `(feat. …)` credits. Anniversary mixes like "2019 Mix" or "Dolby Atmos Mix" are kept unless you turn that off.
 
 **Right click a track** → "No Remix: allow this track" to always keep it, or "No Remix: treat as a remix" to always remove it.
 

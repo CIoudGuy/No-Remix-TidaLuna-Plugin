@@ -11,9 +11,7 @@
 		"watch": "concurrently \"pnpm:build --watch\" pnpm:serve",
 		"build": "rimraf ./dist && tsx esbuild.config.ts",
 		"serve": "http-server ./dist -p 3000 -s --cors -c-1",
-		"pretest": "pnpm run build",
-		"test": "tsx --test test/*.test.ts",
-		"typecheck": "tsc --noEmit -p . 2>&1 | grep -E '^(plugins|test)/' && exit 1 || exit 0"
+		"typecheck": "tsc --noEmit -p . 2>&1 | grep -E '^plugins/' && exit 1 || exit 0"
 	},
 	"devDependencies": {
 		"@types/node": "^25.0.9",

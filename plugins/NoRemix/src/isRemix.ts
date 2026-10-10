@@ -1,4 +1,4 @@
-// Pure matching logic, kept free of @luna imports so it can be tested with plain node.
+// Pure matching logic (no @luna imports): decides from a title and version whether a track is a remix.
 
 // In every word list below a space or hyphen means "space, hyphen or nothing",
 // so "sped up" also matches "sped-up" and "spedup".

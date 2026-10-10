@@ -371,7 +371,7 @@ const markMovedOff = (productId: string) => {
 const wasMovedOff = (productId: string) => Date.now() - (movedOff.get(productId) ?? 0) < 10_000;
 
 let lastSkipped = { id: "", at: 0, bounces: 0 };
-const skipCurrent = (current: QueueElement, backwards: boolean) => {
+const skipCurrent = (current: QueueElement, backwards: boolean, target?: number) => {
 	const id = key(current.mediaItemId);
 	const bounces = lastSkipped.id === id && Date.now() - lastSkipped.at < 3000 ? lastSkipped.bounces + 1 : 0;
 	lastSkipped = { id, at: Date.now(), bounces };
@@ -387,6 +387,11 @@ const skipCurrent = (current: QueueElement, backwards: boolean) => {
 	if (backwards && currentIndex > 0) {
 		trace.log("Skipping remix (backwards)");
 		return PlayState.previous();
+	}
+	// Straight to a track we know isn't a remix, past remixes that are still in the queue
+	if (target !== undefined && target > currentIndex && target < elements.length) {
+		trace.log(`Skipping remix (to queue entry ${target})`);
+		return PlayState.moveTo(target);
 	}
 	if (currentIndex < elements.length - 1) {
 		trace.log("Skipping remix");
@@ -449,6 +454,53 @@ const QUEUE_SYNC_MS = 600;
 // Don't hold up skipping or lining up the next track behind a slow lookup for longer than this
 const SETTLE_DEADLINE_MS = 500;
 
+// Play on a list puts its first page in the queue right away and TIDAL adds the rest in the background.
+// Editing the queue meanwhile is something TIDAL doesn't plan for, so removals wait until it's done:
+// until the queue has stopped growing for a moment. A remix that's playing is still skipped right away.
+const FILL_QUIET_MS = 2500;
+const FILL_MAX_MS = 30_000;
+let fillStarted = 0;
+let fillUntil = 0;
+// TIDAL asked for the rest of the list and none of it has arrived yet (fetching a big list takes a while)
+let restPending = false;
+const markFilling = () => {
+	const now = Date.now();
+	if (now >= fillUntil) fillStarted = now;
+	fillUntil = Math.min(now + FILL_QUIET_MS, fillStarted + FILL_MAX_MS);
+};
+const fillWait = () => {
+	const now = Date.now();
+	if (restPending && now < fillStarted + FILL_MAX_MS) return fillStarted + FILL_MAX_MS - now;
+	restPending = false;
+	return Math.max(0, fillUntil - now);
+};
+redux.intercept(
+	[
+		"playQueue/ADD_TRACK_LIST_TO_PLAY_QUEUE",
+		"playQueue/FETCH_FIRST_PAGE_AND_ADD_TO_QUEUE",
+		"playQueue/FETCH_REST_OF_THE_TRACKS_AND_ADD_TO_QUEUE",
+		"playQueue/ADD_ALREADY_LOADED_ITEMS_TO_QUEUE",
+		"playQueue/ADD_NOW_REST_OF_TRACK_LIST",
+	],
+	unloads,
+	(_, type) => {
+		if (unloaded) return;
+		markFilling();
+		if (type === "playQueue/FETCH_REST_OF_THE_TRACKS_AND_ADD_TO_QUEUE") restPending = true;
+		else if (type === "playQueue/ADD_TRACK_LIST_TO_PLAY_QUEUE" || type === "playQueue/FETCH_FIRST_PAGE_AND_ADD_TO_QUEUE") restPending = false;
+	},
+);
+/** The first upcoming entry we already know isn't a remix */
+const firstKnownGood = () => {
+	const { elements, currentIndex } = getQueue();
+	for (let i = currentIndex + 1; i < elements.length; i++) {
+		const word = verdictNow(elements[i].mediaItemId);
+		if (word === "") return i;
+		if (word === undefined) return undefined;
+	}
+	return undefined;
+};
+
 const cleanOnce = async () => {
 	const { current } = getQueue();
 	const backwards = movedBackwards;
@@ -485,6 +537,13 @@ const cleanOnce = async () => {
 	// Pressed previous onto a remix: keep going back, the next pass handles the rest
 	if (skipNow && backwards && isCurrent(current!) && getQueue().currentIndex > 0) return skipCurrent(current!, true);
 
+	// TIDAL is still adding a list to the queue: leave the queue alone until it's done, only move off a playing remix
+	if (fillWait() > 0 && !isRemote()) {
+		if (skipNow && isCurrent(current!)) skipCurrent(current!, false, firstKnownGood());
+		scheduleClean(fillWait() + 50);
+		return;
+	}
+
 	// 3. Everything coming up. Once we know what will play next (the first upcoming track that isn't a remix)
 	// skip the current remix to it, or line it up if we removed what TIDAL had lined up. Done as early as possible,
 	// the rest of the queue is cleaned after.
@@ -501,6 +560,8 @@ const cleanOnce = async () => {
 	let removals = 0;
 	for (const element of elements.slice(currentIndex + 1)) {
 		if (unloaded) return;
+		// Something else is playing now (e.g. you clicked a remix): start over so it's handled right away
+		if (cleanAgain && getQueue().current?.uid !== current?.uid) return;
 		// Gone already (e.g. a new queue replaced this one): don't waste a lookup on it
 		if (!isUpcoming(element)) continue;
 		const lookup = verdict(element.mediaItemId);
@@ -584,6 +645,11 @@ const onStoreChange = () => {
 	const playing = isPlaying();
 	if (elements === last.elements && currentIndex === last.currentIndex && productId === last.productId && playing === last.playing) return;
 	if (elements !== last.elements) forgetFinishedRemovals(elements);
+	// Still growing: TIDAL isn't done adding the list yet
+	if (elements !== last.elements && fillWait() > 0 && elements.length > ((last.elements as QueueElement[] | undefined)?.length ?? 0)) {
+		restPending = false;
+		markFilling();
+	}
 
 	if (current?.uid !== last.currentUid) {
 		movedBackwards = last.currentUid !== undefined && elements[currentIndex + 1]?.uid === last.currentUid;

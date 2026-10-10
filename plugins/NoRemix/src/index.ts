@@ -1,7 +1,7 @@
 import { LunaUnload, Tracer } from "@luna/core";
 import { MediaItem, PlayState, redux } from "@luna/lib";
 
-import { parseWordList, remixMatch } from "./isRemix";
+import { type MatchOptions, parseWordList, remixMatch } from "./isRemix";
 import { settings } from "./Settings";
 
 export const { trace, errSignal } = Tracer("[NoRemix]");
@@ -41,6 +41,15 @@ const getTrackInfo = async (itemId: redux.ItemId): Promise<TrackInfo | undefined
 	failures.set(String(itemId), Date.now());
 };
 
+// Parsed once per settings change instead of for every track
+let matchOptions: MatchOptions | undefined;
+const getMatchOptions = () =>
+	(matchOptions ??= {
+		extraWords: parseWordList(settings.extraWords),
+		allowWords: parseWordList(settings.allowWords),
+		keepAnniversaryMixes: settings.keepAnniversaryMixes,
+	});
+
 /**
  * Returns the matched remix word if `itemId` is a remix, "" if it is not, or undefined if it could not be looked up.
  */
@@ -51,12 +60,7 @@ const checkItem = async (itemId: redux.ItemId): Promise<string | undefined> => {
 
 	const info = await getTrackInfo(itemId);
 	if (info === undefined) return;
-	const verdict =
-		remixMatch(info.title, info.version, {
-			extraWords: parseWordList(settings.extraWords),
-			allowWords: parseWordList(settings.allowWords),
-			keepAnniversaryMixes: settings.keepAnniversaryMixes,
-		}) ?? "";
+	const verdict = remixMatch(info.title, info.version, getMatchOptions()) ?? "";
 	verdicts.set(key, verdict);
 	if (verdict !== "") trace.log(`"${info.title}${info.version ? ` (${info.version})` : ""}" is a remix (matched "${verdict}")`);
 	return verdict;
@@ -67,6 +71,7 @@ const isRemix = async (itemId: redux.ItemId) => !!(await checkItem(itemId));
  * Call when settings change, forgets every verdict and re-checks the queue.
  */
 export const onSettingsChanged = () => {
+	matchOptions = undefined;
 	verdicts.clear();
 	scheduleClean();
 };
@@ -89,16 +94,19 @@ unloads.add(() => clearTimeout(notifyTimeout));
 // #endregion
 
 // #region Skipping the current track
-// Direction of the last track change, so pressing "previous" onto a remix keeps going backwards
+// True when the last track change was a "previous" (the old track is now right after the current one),
+// so pressing previous onto a remix keeps going backwards instead of bouncing forward again
 let movedBackwards = false;
+// Safety net against fighting the user/Tidal in an endless loop, reset whenever a non remix is playing
 const recentSkips: number[] = [];
 let stuckCheck: ReturnType<typeof setTimeout> | undefined;
 unloads.add(() => clearTimeout(stuckCheck));
 
-const skipCurrent = (current: redux.PlayQueueElement) => {
+const isCurrent = (uid: string) => PlayState.playQueue.elements[PlayState.playQueue.currentIndex]?.uid === uid;
+
+const skipCurrent = (current: redux.PlayQueueElement, backwards: boolean) => {
 	const { elements, currentIndex } = PlayState.playQueue;
 
-	// Safety net: never fight the user/Tidal in an endless skip loop
 	const now = Date.now();
 	while (recentSkips.length > 0 && now - recentSkips[0] > 15000) recentSkips.shift();
 	if (recentSkips.length >= 8) {
@@ -108,7 +116,7 @@ const skipCurrent = (current: redux.PlayQueueElement) => {
 	}
 	recentSkips.push(now);
 
-	if (movedBackwards && currentIndex > 0) {
+	if (backwards && currentIndex > 0) {
 		trace.log("Skipping remix (backwards)");
 		return PlayState.previous();
 	}
@@ -122,8 +130,7 @@ const skipCurrent = (current: redux.PlayQueueElement) => {
 	redux.actions["playbackControls/SKIP_NEXT"]();
 	clearTimeout(stuckCheck);
 	stuckCheck = setTimeout(() => {
-		const queue = PlayState.playQueue;
-		if (!unloaded && queue.elements[queue.currentIndex]?.uid === current.uid && PlayState.playing) {
+		if (!unloaded && isCurrent(current.uid) && PlayState.playing) {
 			trace.log("Nothing to skip to, pausing remix");
 			PlayState.pause();
 		}
@@ -141,37 +148,56 @@ const isNext = (uid: string) => {
 	return elements[currentIndex + 1]?.uid === uid;
 };
 
-const cleanOnce = async () => {
-	// Deal with whatever is playing right now first, it's the most noticeable
-	const current = PlayState.playQueue.elements[PlayState.playQueue.currentIndex];
-	if (settings.skipCurrent && current !== undefined && (await isRemix(current.mediaItemId))) {
-		if (unloaded) return;
-		const stillCurrent = PlayState.playQueue.elements[PlayState.playQueue.currentIndex]?.uid === current.uid;
-		// Moving changes currentIndex which schedules another pass, so stop here
-		if (stillCurrent) return skipCurrent(current);
+// Tidal preloads the next track, when we remove it Tidal has to line up the new next track
+const preloadNext = () => {
+	try {
+		(redux.actions["player/PRELOAD_NEXT_ITEM"] as (payload?: unknown) => unknown)();
+	} catch (err) {
+		trace.warn("Failed to preload next item", err);
 	}
+};
 
-	// Then everything coming up, in order, removing each remix as soon as it's found
-	const upcoming = PlayState.playQueue.elements.slice(PlayState.playQueue.currentIndex + 1);
+const cleanOnce = async () => {
+	const current = PlayState.playQueue.elements[PlayState.playQueue.currentIndex];
+	const backwards = movedBackwards;
+	const currentIsRemix = settings.skipCurrent && current !== undefined && (await isRemix(current.mediaItemId));
+	if (unloaded) return;
+	if (!currentIsRemix) recentSkips.length = 0;
+
+	// Pressed previous onto a remix: keep going back, the next pass handles the rest
+	if (currentIsRemix && backwards && isCurrent(current.uid) && PlayState.playQueue.currentIndex > 0) return skipCurrent(current, true);
+
+	// Once we know what will play next (the first upcoming track that isn't a remix) skip the current remix
+	// to it, or line it up if we removed what Tidal had preloaded. Done as early as possible, the rest of
+	// the queue is cleaned after.
+	let settled = false;
 	let removedNext = false;
+	const settle = () => {
+		if (settled) return;
+		settled = true;
+		if (currentIsRemix && isCurrent(current.uid)) skipCurrent(current, false);
+		else if (removedNext) preloadNext();
+	};
+
+	const upcoming = PlayState.playQueue.elements.slice(PlayState.playQueue.currentIndex + 1);
 	for (const element of upcoming) {
-		if (!(await isRemix(element.mediaItemId))) continue;
+		if (!(await isRemix(element.mediaItemId))) {
+			if (unloaded) return;
+			settle();
+			continue;
+		}
 		if (unloaded) return;
 		// The queue may have changed while we were looking tracks up, only remove what's still upcoming
 		if (!isUpcoming(element.uid)) continue;
-		removedNext ||= isNext(element.uid);
+		const wasNext = isNext(element.uid);
 		redux.actions["playQueue/REMOVE_ELEMENT"]({ uid: element.uid });
 		notifyRemoved();
-	}
-
-	// Tidal preloads the next track, if we removed it make Tidal line up the new next track
-	if (removedNext) {
-		try {
-			(redux.actions["player/PRELOAD_NEXT_ITEM"] as (payload?: unknown) => unknown)();
-		} catch (err) {
-			trace.warn("Failed to preload next item", err);
+		if (wasNext) {
+			if (settled) preloadNext();
+			else removedNext = true;
 		}
 	}
+	settle();
 };
 
 let cleaning = false;
@@ -189,6 +215,8 @@ const clean = async () => {
 		} while (cleanAgain && !unloaded);
 	} catch (err) {
 		trace.err("Failed to clean play queue", err);
+		// Don't lose a re-check that was requested while this pass was running
+		if (cleanAgain) scheduleClean();
 	} finally {
 		cleaning = false;
 	}
@@ -205,11 +233,15 @@ unloads.add(() => clearTimeout(cleanTimeout));
 // Re-check whenever the queue contents or position changes
 let lastElements: redux.PlayQueueElement[] | undefined;
 let lastIndex: number | undefined;
+let lastCurrentUid: string | undefined;
 const unsubscribe = redux.store.subscribe(() => {
 	const { elements, currentIndex } = redux.store.getState().playQueue;
 	if (elements === lastElements && currentIndex === lastIndex) return;
-	// Only a single step back in the same queue counts as "previous", clicking a track or playing something new does not
-	if (currentIndex !== lastIndex) movedBackwards = elements.length === lastElements?.length && lastIndex !== undefined && currentIndex === lastIndex - 1;
+	const currentUid = elements[currentIndex]?.uid;
+	if (currentUid !== lastCurrentUid) {
+		movedBackwards = lastCurrentUid !== undefined && elements[currentIndex + 1]?.uid === lastCurrentUid;
+		lastCurrentUid = currentUid;
+	}
 	lastElements = elements;
 	lastIndex = currentIndex;
 	scheduleClean();

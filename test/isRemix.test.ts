@@ -34,6 +34,15 @@ const remixes: [string, string?][] = [
 	["Canción (Remezcla)"],
 	["Song (Armand Van Helden Mix)"],
 	["Song (2019 Club Mix)"],
+	["Café Del Mar", "Michael Woods 2006 Remix"],
+	["Sandstorm (Darude 2019 Remix)"],
+	["2002", "Remix"],
+	["1979 (Remix)"],
+	["Song (With You Mix)"],
+	["Song (Re-Work)"],
+	["Song (Flipped)"],
+	["Song (\uFF32\uFF25\uFF2D\uFF29\uFF38)"],
+	["曲名リミックス"],
 ];
 
 const notRemixes: [string, string?][] = [
@@ -62,6 +71,13 @@ const notRemixes: [string, string?][] = [
 	["Song (Spatial Audio Mix)"],
 	["Song (Instrumental)"],
 	["Song (Mixtape Version)"],
+	["Song (Mix-tape)"],
+	["Song (Mix Cut)"],
+	["Song", "Mix Cut"],
+	["Song (From \"Bootleg\")"],
+	['Song (From the Motion Picture "Flip")'],
+	["Song (with Calvin Harris)"],
+	["Song", "feat. Dub FX"],
 	[""],
 ];
 
@@ -85,7 +101,7 @@ test("anniversary mixes can be removed too", () => {
 });
 
 test("single characters in word lists are ignored", () => {
-	assert.deepEqual(parseWordList("a, i ,live,, cover"), ["live", "cover"]);
+	assert.deepEqual(parseWordList("a, i ,live,, cover, --, ..."), ["live", "cover"]);
 	assert.equal(isRemix("A Sky Full of Stars", undefined, { extraWords: parseWordList("a") }), false);
 });
 

@@ -1,16 +1,17 @@
 {
-	"name": "@cioudguy/no-remix-tidaluna-plugin",
-	"description": "Removes every remix from your Tidal play queue",
+	"name": "@cioudguy/tidaluna-plugins",
+	"description": "Plugins for TidaLuna",
 	"author": {
 		"name": "CIoudGuy",
 		"url": "https://github.com/CIoudGuy"
 	},
-	"homepage": "https://github.com/CIoudGuy/No-Remix-TidaLuna-Plugin",
+	"homepage": "https://github.com/CIoudGuy/TidaLuna-Plugins",
 	"type": "module",
 	"scripts": {
 		"watch": "concurrently \"pnpm:build --watch\" pnpm:serve",
 		"build": "rimraf ./dist && tsx esbuild.config.ts",
 		"serve": "http-server ./dist -p 3000 -s --cors -c-1",
+		"pretest": "pnpm run build",
 		"test": "tsx --test test/*.test.ts",
 		"typecheck": "tsc --noEmit -p . 2>&1 | grep -E '^(plugins|test)/' && exit 1 || exit 0"
 	},

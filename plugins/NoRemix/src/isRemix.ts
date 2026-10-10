@@ -35,8 +35,10 @@ export const strongWords = [
 	"加速版",
 	"慢速版",
 	"降调版",
+	"電音版",
+	"降調版",
+	"重新混音",
 	"抖音版",
-	"慢摇",
 	"รีมิกซ์",
 	"ريمكس",
 	"ریمیکس",
@@ -65,17 +67,17 @@ export const qualifierWords = [
 	"re-imagined",
 	"re-fix",
 	"re-rub",
-	"remode",
+	"re-mode",
 	"re-touch",
-	"reinterpretation",
+	"re-interpretation",
 	"re-interpreted",
 	"speed up",
 	"speed version",
-	"slowed",
 	"reverb",
 	"reverbed",
 	"pitched",
 	"pitch up",
+	"pitch down",
 	"screwed",
 	"8d",
 	"bass boost",
@@ -104,6 +106,8 @@ export const qualifierWords = [
 const WORD_CHAR = "[\\p{sc=Latin}\\p{sc=Cyrillic}\\p{sc=Greek}\\p{N}]";
 // The weaker words need a real boundary, so "(VIPルーム)" (a VIP room) doesn't count
 const ANY_WORD_CHAR = "[\\p{L}\\p{N}]";
+// After a word, Chinese titles glue on "版" (version) or "环绕" (surround): "Lofi版", "8D环绕"
+const ANY_WORD_CHAR_AFTER = "(?!版|环绕|環繞)[\\p{L}\\p{N}]";
 // Scripts where words are glued together (or take glued prefixes like Arabic "ال"), matched without boundaries
 const NO_SPACE_SCRIPT = /[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Hangul}\p{sc=Thai}\p{sc=Arabic}\p{sc=Hebrew}\p{sc=Devanagari}]/u;
 // What "+" and "&" in a word list stand for: "+", "&", "/", ",", "x", "and", "n", "'n'" or nothing
@@ -114,7 +118,7 @@ const wordPattern = (word: string) =>
 	word
 		.trim()
 		.split(/\s*[+&]\s*/)
-		.map((piece) => piece.split(/[\s-]+/).map(escape).join("[\\s-]?"))
+		.map((piece) => piece.split(/[\s-]+/).map(escape).join("[\\s:-]?"))
 		.join(JOINER);
 // Your own words are taken as written ("+" and "&" are just characters), so no word can make matching slow
 const literalWordPattern = (word: string) => word.trim().split(/[\s-]+/).map(escape).join("[\\s-]?");
@@ -123,12 +127,12 @@ const literalWordPattern = (word: string) => word.trim().split(/[\s-]+/).map(esc
  * One regex matching any of `words` as whole words, plus raw regex fragments with (`bounded`) or without
  * (`unbounded`) word boundaries.
  */
-const buildRegex = (words: string[], bounded: string[] = [], unbounded: string[] = [], boundary = WORD_CHAR, pattern = wordPattern) => {
+const buildRegex = (words: string[], bounded: string[] = [], unbounded: string[] = [], boundary = WORD_CHAR, pattern = wordPattern, after = boundary) => {
 	bounded = [...bounded];
 	unbounded = [...unbounded];
 	for (const word of words) (NO_SPACE_SCRIPT.test(word) ? unbounded : bounded).push(pattern(word));
 	const alternatives: string[] = [];
-	if (bounded.length > 0) alternatives.push(`(?<!${boundary})(?:${bounded.join("|")})(?!${boundary})`);
+	if (bounded.length > 0) alternatives.push(`(?<!${boundary})(?:${bounded.join("|")})(?!${after})`);
 	alternatives.push(...unbounded);
 	return alternatives.length > 0 ? new RegExp(alternatives.join("|"), "iu") : undefined;
 };
@@ -170,7 +174,9 @@ const strongRegex = buildRegex(
 		"(?<!\\p{sc=Latin})remix(?=\\d)",
 		// "DJ版", "DJ抖音版", "DJ阿卓版" (a Chinese DJ's version)
 		"(?<!\\p{sc=Latin})dj[^()[\\]【】〖〗~]{0,12}?版",
-		"(?:快速|倍速|减速|降速|升调)版",
+		"(?:快速|倍速|[减減]速|降速|升[调調])版",
+		// "慢摇" (DJ slow-rock style), but not "慢慢摇" (sway slowly)
+		"(?<!慢)慢[摇搖]",
 		"ريميكس",
 	],
 )!;
@@ -179,10 +185,11 @@ const strongRegex = buildRegex(
 const flipGenres =
 	"(?:hard[\\s-]?|hyper[\\s-]?|melodic[\\s-]?)?techno|hard[\\s-]?style|psy[\\s-]?trance|dubstep|drum[\\s-]*(?:&|and|n|'n')[\\s-]*bass|dnb|d&b|" +
 	"(?:deep|tech|afro|slap|future|bass|big[\\s-]?room)[\\s-]?house|edm|phonk|jersey[\\s-]?club|baile[\\s-]?funk|brazilian[\\s-]?funk|amapiano|" +
-	"moombahton|lo[\\s-]?fi|vinahouse|vaporwave|jungle|(?:uk|speed)[\\s-]?garage|eurodance|hands[\\s-]?up|gabber|frenchcore|breakbeat|discofox";
+	"moombahton|lo[\\s-]?fi|vinahouse|vaporwave|jungle|(?:uk|speed)[\\s-]?garage|eurodance|hands[\\s-]?up|gabber|frenchcore|breakbeat|discofox" +
+	"|(?:hard[\\s-]?)?tekk|hard[\\s-]?tek|schranz|rawstyle|jumpstyle|happy[\\s-]?hardcore|hard[\\s-]?bass";
 // Plus everyday words that only mean a flip next to "Version": "(Club Version)", "(Trance Ver.)", "(Versión Dance)".
 // "(Acoustic Version)", "(Salsa Version)" or "(Rock Ver.)" are new recordings of the song and are kept.
-const genres = `${flipGenres}|house|trance|trap|drill|jersey|club|dance|dj|rave|party|electro|electr[oó]nica|electronic`;
+const genres = `${flipGenres}|house|trance|trap|drill|jersey|club|dance|dj|rave|party|electro|ele?c?tr[oóô]nica|electronic`;
 const genreOnlyRegex = new RegExp(`^\\s*(?:${flipGenres})\\s*$`, "iu");
 
 const qualifierRegex = buildRegex(
@@ -193,7 +200,7 @@ const qualifierRegex = buildRegex(
 		"lo[\\s-]?fi(?![\\s-]*demo)",
 		"hyper[\\s-]?techno",
 		"(?:16|32)d",
-		`(?:${genres})[\\s-]*ver(?:sion|siyon|s|\\.)?`,
+		`(?:${genres})[\\s-]*(?:ver(?:sion|siyon|s|\\.)?|版)`,
 		`(?:versi[oó]n[ei]?|versão|versiyon|wersja|verze|ver\\.?)[\\s-]+(?:${genres}|(?:brega[\\s-]?)?funk)`,
 		"tik[\\s-]?tok[\\s-]+ver(?:sion|\\.)?|hot[\\s-]+tik[\\s-]?tok|viral[\\s-]+tik[\\s-]?tok|tik[\\s-]?tok[\\s-]+viral",
 		"h[ıi]zland[ıi]r[ıi]lm[ıi][şs]",
@@ -203,21 +210,30 @@ const qualifierRegex = buildRegex(
 		"клубн(?:ая|ый)\\s+(?:версия|микс)",
 		// sped up or slowed down by a factor, "(0.8x)", "(1.25x)", "(x1.2)"
 		"(?:[01]\\.\\d{1,2}|2\\.0)\\s*[x×]|[x×]\\s*(?:[01]\\.\\d{1,2}|2\\.0)",
+		// #10 Ukrainian and Brazilian/Spanish sped up and club wording
+		"прискорен(?:а|ий|е)",
+		"[су]?повільнен(?:а|ий|е)",
+		"клубн(?:а|ий)\\s+(?:версія|мікс)",
+		"(?:versi[oó]n|versão)[\\s-]+acelerad[oa]",
+		// "(Slowed)", but not The Beatles' "Slowed Down For Master Tape"
+		"slowed(?![\\s-]+down[\\s-]+for[\\s-]+(?:the[\\s-]+)?master)",
 	],
 	["倍速"],
 	ANY_WORD_CHAR,
+	wordPattern,
+	ANY_WORD_CHAR_AFTER,
 )!;
 
 // "mix" / "edit" with what is directly in front of it, so "Clubmix" and "Kygo Edit" can be told apart from "Radio Edit"
-const mixRegex = new RegExp(`(?<!${ANY_WORD_CHAR})(\\p{sc=Latin}*)mix(?!${ANY_WORD_CHAR})`, "giu");
-const editRegex = new RegExp(`(?<!${ANY_WORD_CHAR})edit(?!${ANY_WORD_CHAR})`, "giu");
+const mixRegex = new RegExp(`(?<!${ANY_WORD_CHAR})(\\p{sc=Latin}*)mix(?!${ANY_WORD_CHAR_AFTER})`, "giu");
+const editRegex = new RegExp(`(?<!${ANY_WORD_CHAR})edit(?!${ANY_WORD_CHAR_AFTER})`, "giu");
 
 /** Words that can come before "mix" without making it a remix, e.g. "Original Mix", "Extended Vocal Mix", '7" Mix' */
 const plainMixWords = new Set(
 	(
 		"original extended radio album single main short long full vocal vocals instrumental inst acapella acappella a cappella acoustic " +
 		"live demo rough early alternate alt alternative unreleased previously outtake outtakes session sessions rehearsal take reference " +
-		"final clean explicit dirty censored edit edited version ver the and us uk 7 7in 7inch 7-inch 45 lp ep cd video tv promo 1st first"
+		"final clean explicit dirty censored edit edited version ver the and us uk 7 7in 7inch inch 45 lp ep cd video tv promo 1st first unnumbered trial underdubbed"
 	).split(" "),
 );
 /** Words that can come before "edit" without making it a DJ edit, e.g. "Radio Edit", "Single Edit", "Director's Edit" */
@@ -245,7 +261,7 @@ const wordsOf = (clause: string) =>
 	clause
 		.toLowerCase()
 		.replace(/["'.]/g, "")
-		.split(/[\s&]+/)
+		.split(/[\s&-]+/)
 		.filter((word) => word !== "");
 
 const mixMatch = (part: string) => {
@@ -290,15 +306,22 @@ const anniversaryWords = new Set(
 	).split(" "),
 );
 const anniversaryMarker =
-	/^(?:stereo|mono|atmos|spatial|binaural|quad|quadraphonic|surround|5\.1|7\.1(?:\.4)?|360|immersive|headphones?|anniversary|ultimate|\d{1,3}(?:st|nd|rd|th))$/;
-const versionWords = (part: string) => part.toLowerCase().split(/[\s/;,&+()[\]"-]+/).filter((word) => word !== "");
+	/^(?:stereo|mono|atmos|spatial|binaural|quad|quadraphonic|surround|5\.1|7\.1(?:\.4)?|360|immersive|headphones?|anniversary|ultimate)$/;
+const versionWords = (part: string) =>
+	part
+		.toLowerCase()
+		.split(/(?:[\s/;,&+()[\]"-]|版|环绕|環繞)+/)
+		.filter((word) => word !== "");
 const isAnniversary = (part: string) => {
 	let mixed = false;
 	let marked = false;
-	for (const word of versionWords(part)) {
+	// EMI mix numbers on reissues, "Mono Mix RM 11", "Stereo Mix RS6"
+	for (const word of versionWords(part.replace(/(?<![\p{L}\p{N}])r[ms]\s*\d{1,3}(?![\p{L}\p{N}])/giu, " "))) {
 		if (word === "mix" || word === "remix" || word === "remixed") mixed = true;
 		// A year only counts in front of the mix, "2019 Mix" but not "Remix 2019"
 		else if (/^(?:19|20)\d{2}$/.test(word)) marked ||= !mixed;
+		// "50th Anniversary Mix" is fine, but "(2nd Mix)" alone is just a second remix
+		else if (/^\d{1,3}(?:st|nd|rd|th)$/.test(word)) continue;
 		else if (anniversaryMarker.test(word)) marked = true;
 		else if (!anniversaryWords.has(word)) return false;
 	}
@@ -319,6 +342,25 @@ const isSingleRemix = (part: string) => {
  */
 const isPlainPart = (part: string, keepAnniversaryMixes: boolean) =>
 	/mix/i.test(part) && (isSingleRemix(part) || (keepAnniversaryMixes && isAnniversary(part)));
+
+/**
+ * A part without its plain pieces ("Single Version / Mono Mix" -> "Single Version"), or "" if it's all plain.
+ */
+const cutPlain = (part: string, keepAnniversaryMixes: boolean) => {
+	if (isPlainPart(part, keepAnniversaryMixes)) return "";
+	const pieces = part.split(/([/;,]|\s-\s)/);
+	if (pieces.length < 3) return part;
+	let kept = "";
+	let cut = false;
+	for (let i = 0; i < pieces.length; i += 2) {
+		if (pieces[i].trim() !== "" && isPlainPart(pieces[i], keepAnniversaryMixes)) {
+			cut = true;
+			continue;
+		}
+		kept += (kept === "" ? "" : pieces[i - 1]) + pieces[i];
+	}
+	return cut ? kept : part;
+};
 
 /**
  * Bracketed parts that are credits rather than a version, e.g. "(feat. Dub FX)", "(Prod. by VIP)",
@@ -424,12 +466,15 @@ export const remixMatch = (title: string | undefined | null, version: string | u
 	// Cut out anniversary mixes ("Come Together - 2019 Mix" -> "Come Together") and single remixes
 	const keepAnniversaryMixes = opts.keepAnniversaryMixes !== false;
 	let parts = versionParts(title);
-	const plain = parts.filter((part) => isPlainPart(part.text, keepAnniversaryMixes));
-	if (plain.length > 0) {
-		for (const part of plain) title = title.replace(part.whole, " ");
-		parts = versionParts(title);
+	let cut = false;
+	for (const part of parts) {
+		const text = cutPlain(part.text, keepAnniversaryMixes);
+		if (text === part.text) continue;
+		title = title.replace(part.whole, () => (text.trim() === "" ? " " : part.whole.replace(part.text, () => text)));
+		cut = true;
 	}
-	if (isPlainPart(version, keepAnniversaryMixes)) version = "";
+	if (cut) parts = versionParts(title);
+	version = cutPlain(version, keepAnniversaryMixes);
 
 	const strong = `${title} ${version}`.match(strongRegex);
 	if (strong) return strong[0];

@@ -194,7 +194,9 @@ const flipGenres =
 // Plus everyday words that only mean a flip next to "Version": "(Club Version)", "(Trance Ver.)", "(Versión Dance)".
 // "(Acoustic Version)", "(Salsa Version)" or "(Rock Ver.)" are new recordings of the song and are kept.
 const genres = `${flipGenres}|house|trance|trap|drill|jersey|club|dance|dj|rave|party|electro|ele?c?tr[oóô]nica|electronic`;
-const genreOnlyRegex = new RegExp(`^\\s*(?:${flipGenres})\\s*$`, "iu");
+// A part that is only a flip genre, "(Techno)", or Spanish / Portuguese for sped up or slowed down, "(Acelerada)"
+// (only the whole part, "Corazón Acelerado" is a song title)
+const genreOnlyRegex = new RegExp(`^\\s*(?:${flipGenres}|acelerad[oa]|ralentizad[oa])\\s*$`, "iu");
 
 const qualifierRegex = buildRegex(
 	qualifierWords.filter((word) => word !== "mix" && word !== "edit"),

@@ -106,7 +106,7 @@ const setOverride = (itemId: redux.ItemId, override: Override) => {
 	if (override === "remix") remixIds.add(key(itemId));
 	// An explicit choice beats "leave it alone" and the guard against being skipped over and over
 	leftAlone.delete(key(itemId));
-	if (lastSkipped.id === key(itemId)) lastSkipped = { id: "", entry: "", at: 0, bounces: 0 };
+	if (lastSkipped.id === key(itemId)) lastSkipped = { id: "", entry: "", at: 0, bounces: 0, atEnd: false };
 	insistedEntry = undefined;
 	settings.allowedIds = [...allowedIds].join(",");
 	settings.remixIds = [...remixIds].join(",");
@@ -192,13 +192,23 @@ const fetchTrack = async (itemId: redux.ItemId): Promise<TrackInfo | undefined> 
 	return (await MediaItem.fromId(itemId))?.tidalItem as TrackInfo | undefined;
 };
 
+// Lookups in progress, so a pass that starts over doesn't fetch the same tracks again
+const lookups = new Map<string, Promise<string | undefined>>();
 /**
  * Like verdictNow, but fetches the track from TIDAL when needed. undefined if that fails.
  */
-const verdict = async (itemId: redux.ItemId): Promise<string | undefined> => {
+const verdict = (itemId: redux.ItemId): Promise<string | undefined> => {
 	const now = verdictNow(itemId);
-	if (now !== undefined) return now;
-
+	if (now !== undefined) return Promise.resolve(now);
+	const id = key(itemId);
+	let lookup = lookups.get(id);
+	if (lookup === undefined) {
+		lookup = lookUp(itemId).finally(() => lookups.delete(id));
+		lookups.set(id, lookup);
+	}
+	return lookup;
+};
+const lookUp = async (itemId: redux.ItemId): Promise<string | undefined> => {
 	const id = key(itemId);
 	const failed = failures.get(id);
 	if (failed !== undefined && Date.now() - failed.at < retryDelay(failed.count)) return undefined;
@@ -502,16 +512,26 @@ const markMovedOff = (productId: string) => {
 };
 const wasMovedOff = (productId: string) => Date.now() - (movedOff.get(productId) ?? 0) < 10_000;
 
-let lastSkipped = { id: "", entry: "", at: 0, bounces: 0 };
+// `atEnd`: that attempt found nothing after it in the queue and left it to TIDAL's next button
+let lastSkipped = { id: "", entry: "", at: 0, bounces: 0, atEnd: false };
 // Whether the queue moved off the entry we last skipped, a retry on an entry it never left isn't someone picking it again
 let leftSkippedEntry = true;
 const skipCurrent = (current: QueueElement, backwards: boolean, target?: number) => {
 	const id = key(current.mediaItemId);
 	const now = Date.now();
-	// Still on the entry we just tried to move off (e.g. waiting on autoplay): the first attempt is still being handled
-	if (entryKey(current) === lastSkipped.entry && !leftSkippedEntry && now - lastSkipped.at < 3000) return;
-	const bounces = lastSkipped.id === id && now - lastSkipped.at < 3000 ? lastSkipped.bounces + 1 : 0;
-	lastSkipped = { id, entry: entryKey(current)!, at: now, bounces };
+	const { elements, currentIndex } = getQueue();
+	const sameAttempt = entryKey(current) === lastSkipped.entry && !leftSkippedEntry && now - lastSkipped.at < 3000;
+	if (sameAttempt) {
+		// Still on the entry we just tried to move off (e.g. waiting on autoplay): the first attempt is still being handled.
+		// Unless it was the last track and TIDAL has added more after it since (the rest of a list arriving): move on to
+		// that, after giving TIDAL's own next button (autoplay adds tracks and moves to them) a moment to move first.
+		if (!lastSkipped.atEnd || currentIndex >= elements.length - 1) return;
+		const wait = lastSkipped.at + 1000 - now;
+		if (wait > 0) return scheduleClean(wait);
+	}
+	// Moving on to tracks added after a first attempt isn't the remix being picked again
+	const bounces = sameAttempt ? lastSkipped.bounces : lastSkipped.id === id && now - lastSkipped.at < 3000 ? lastSkipped.bounces + 1 : 0;
+	lastSkipped = { id, entry: entryKey(current)!, at: now, bounces, atEnd: false };
 	leftSkippedEntry = false;
 	if (bounces >= 2) {
 		leftAlone.set(id, now + 5 * 60_000);
@@ -522,7 +542,6 @@ const skipCurrent = (current: QueueElement, backwards: boolean, target?: number)
 	if (!canSkip()) return;
 	markMovedOff(id);
 
-	const { elements, currentIndex } = getQueue();
 	if (backwards && currentIndex > 0) {
 		trace.log("Skipping remix (backwards)");
 		return PlayState.previous();
@@ -551,6 +570,7 @@ const skipCurrent = (current: QueueElement, backwards: boolean, target?: number)
 	// Last track in the queue. Let TIDAL's own next button handle it (autoplay / repeat all),
 	// and if that doesn't move off the remix (autoplay can take a few seconds), pause it.
 	trace.log("Skipping remix (end of queue)");
+	lastSkipped.atEnd = true;
 	redux.actions["playbackControls/SKIP_NEXT"]();
 	// Not if you allowed it or turned skipping off meanwhile
 	pauseIfStillPlaying(() => isCurrent(current) && settings.skipCurrent && verdictNow(current.mediaItemId) !== "", 5000);
@@ -659,8 +679,9 @@ const cleanOnce = async () => {
 	// 1. What's actually playing. If it's a remix the queue doesn't think is playing, play the right track instead.
 	const started = startedProduct;
 	if (started !== undefined && Date.now() - started.at < QUEUE_SYNC_MS) {
-		// Give TIDAL a moment to move its queue to the new track first
-		scheduleClean(started.at + QUEUE_SYNC_MS - Date.now());
+		// Give TIDAL a moment to move its queue to the new track first. If the queue shows something else, that check
+		// can't wait for the rest of this pass (it may be a remix TIDAL had already lined up).
+		scheduleClean(started.at + QUEUE_SYNC_MS - Date.now(), key(current?.mediaItemId) !== started.productId);
 	} else if (started !== undefined) {
 		startedProduct = undefined;
 		const outOfSync = () =>
@@ -805,9 +826,9 @@ const clean = async (urgent = false) => {
 let cleanTimeout: ReturnType<typeof setTimeout> | undefined;
 let cleanDue = Infinity;
 let cleanUrgent = false;
-const scheduleClean = (delay = 250) => {
+const scheduleClean = (delay = 250, urgent = delay <= 50) => {
 	if (unloaded) return;
-	cleanUrgent ||= delay <= 50;
+	cleanUrgent ||= urgent;
 	const due = Date.now() + delay;
 	// Already scheduled sooner
 	if (cleanTimeout !== undefined && cleanDue <= due) return;
@@ -823,13 +844,14 @@ const scheduleClean = (delay = 250) => {
 };
 unloads.add(() => clearTimeout(cleanTimeout));
 
-// Re-check whenever the queue, the playing track or play/pause changes
-let last: { elements?: unknown; currentIndex?: number; currentEntry?: string; productId?: string; playing?: boolean } = {};
+// Re-check whenever the queue, the playing track, play/pause or repeat all changes
+let last: { elements?: unknown; currentIndex?: number; currentEntry?: string; productId?: string; playing?: boolean; repeat?: boolean } = {};
 const onStoreChange = () => {
 	const { elements, currentIndex, current } = getQueue();
 	const productId = playingProductId();
 	const playing = isPlaying();
-	if (elements === last.elements && currentIndex === last.currentIndex && productId === last.productId && playing === last.playing) return;
+	const repeat = repeatsAll();
+	if (elements === last.elements && currentIndex === last.currentIndex && productId === last.productId && playing === last.playing && repeat === last.repeat) return;
 	if (elements !== last.elements) forgetFinishedRemovals(elements);
 	// Still growing: TIDAL isn't done adding the list yet
 	if (elements !== last.elements && fillWait() > 0 && elements.length > ((last.elements as QueueElement[] | undefined)?.length ?? 0)) {
@@ -855,7 +877,7 @@ const onStoreChange = () => {
 	if (current !== undefined && productId === key(current.mediaItemId) && !verdictNow(productId)) lastGoodUid = current.uid;
 	// React quickly when what's playing changes, give queue edits a moment to settle
 	const urgent = currentIndex !== last.currentIndex || productId !== last.productId || playing !== last.playing;
-	last = { elements, currentIndex, currentEntry, productId, playing };
+	last = { elements, currentIndex, currentEntry, productId, playing, repeat };
 	scheduleClean(urgent ? 50 : 250);
 };
 const unsubscribe = redux.store.subscribe(() => {
@@ -883,6 +905,8 @@ try {
 		if (items?.length !== 1 || (items[0].type !== undefined && items[0].type !== "track")) return;
 		const itemId = items[0].item?.id;
 		if (itemId === undefined) return;
+		// The menu of a music video says it's a track too, TIDAL's stored copy knows better
+		if (getState().content?.mediaItems?.[key(itemId)]?.type === "video") return;
 
 		const override = getOverride(itemId);
 		const show = (detected: boolean) => {
@@ -903,7 +927,8 @@ try {
 				} catch {}
 			});
 		};
-		// Show what we know right away, update it if the track still has to be looked up
+		// Show what we know right away, update it if the track still has to be looked up.
+		// A remix we're leaving alone for a while (something kept picking it) offers "treat as a remix", to remove it after all.
 		const known = override === undefined ? verdictNow(itemId) : "";
 		show(!!known);
 		await menuButton.show(contextMenu);

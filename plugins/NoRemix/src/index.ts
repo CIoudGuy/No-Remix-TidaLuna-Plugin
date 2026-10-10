@@ -537,10 +537,16 @@ const skipCurrent = (current: QueueElement, backwards: boolean, target?: number)
 		return PlayState.next();
 	}
 	// Last track with repeat all: straight to the first track at the start that isn't a remix
-	const fromStart = repeatsAll() ? firstGoodFromStart() : undefined;
-	if (fromStart !== undefined && fromStart < currentIndex) {
-		trace.log(`Skipping remix (to queue entry ${fromStart}, repeat all)`);
-		return PlayState.moveTo(fromStart);
+	if (repeatsAll()) {
+		const fromStart = firstGoodFromStart();
+		if (fromStart !== undefined && fromStart < currentIndex) {
+			trace.log(`Skipping remix (to queue entry ${fromStart}, repeat all)`);
+			return PlayState.moveTo(fromStart);
+		}
+		// Going round again would only play remixes
+		trace.log("Only remixes left in the queue");
+		PlayState.pause();
+		return notify("Paused a remix that couldn't be skipped");
 	}
 	// Last track in the queue. Let TIDAL's own next button handle it (autoplay / repeat all),
 	// and if that doesn't move off the remix (autoplay can take a few seconds), pause it.

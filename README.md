@@ -10,8 +10,6 @@ In Tidal go to **Luna Settings → Plugin Store**, paste this URL, then enable t
 https://github.com/CIoudGuy/TidaLuna-Plugins/releases/download/latest/store.json
 ```
 
-Plugins update automatically the next time you restart Tidal.
-
 ## No Remix
 
 Removes every remix from your play queue, and skips one if it starts playing.

@@ -1,0 +1,10 @@
+{
+	"name": "@cioudguy/no-remix",
+	"description": "Removes every remix (and remix-like versions) from your play queue",
+	"author": {
+		"name": "CIoudGuy",
+		"url": "https://github.com/CIoudGuy"
+	},
+	"main": "./src/index.ts",
+	"type": "module"
+}

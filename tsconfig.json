@@ -1,0 +1,6 @@
+{
+	"extends": "luna/tsconfig.json",
+	"compilerOptions": {
+		"allowImportingTsExtensions": true
+	}
+}

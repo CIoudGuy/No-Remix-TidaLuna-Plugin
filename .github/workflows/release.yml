@@ -1,0 +1,35 @@
+name: Release
+
+on:
+ push:
+ pull_request:
+ workflow_dispatch:
+
+permissions:
+ contents: write
+
+jobs:
+ build:
+  runs-on: ubuntu-latest
+  steps:
+   - uses: actions/checkout@v4
+   - uses: pnpm/action-setup@v4
+     with:
+      version: 10
+   - uses: actions/setup-node@v4
+     with:
+      node-version: lts/*
+   - run: pnpm install --no-frozen-lockfile
+   - run: pnpm run typecheck
+   - run: pnpm run build
+   - run: pnpm test
+
+   - name: Publish latest release
+     if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
+     uses: marvinpinto/action-automatic-releases@latest
+     with:
+      repo_token: ${{ secrets.GITHUB_TOKEN }}
+      automatic_release_tag: latest
+      prerelease: false
+      title: Latest Release
+      files: ./dist/**

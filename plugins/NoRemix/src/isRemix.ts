@@ -7,7 +7,7 @@
 /**
  * Words that mean "remix" no matter where they show up in a track's title or version.
  */
-export const strongWords = [
+const strongWords = [
 	"remix",
 	"remixed",
 	"remixes",
@@ -55,7 +55,7 @@ export const strongWords = [
  * This stops songs that are just *called* "Flip" or "Bootleg Rascal" from being removed.
  * "mix" and "edit" are special: "Club Mix" or "Kygo Edit" count, "Original Mix" or "Radio Edit" don't.
  */
-export const qualifierWords = [
+const qualifierWords = [
 	"mix",
 	"edit",
 	"re-work",
@@ -216,7 +216,7 @@ const qualifierRegex = buildRegex(
 		"клубн(?:ая|ый)\\s+(?:версия|микс)",
 		// sped up or slowed down by a factor, "(0.8x)", "(1.25x)", "(x1.2)"
 		"(?:[01]\\.\\d{1,2}|2\\.0)\\s*[x×]|[x×]\\s*(?:[01]\\.\\d{1,2}|2\\.0)",
-		// #10 Ukrainian and Brazilian/Spanish sped up and club wording
+		// Ukrainian sped up and slowed, Spanish and Portuguese sped up
 		"прискорен(?:а|ий|е)",
 		"[су]?повільнен(?:а|ий|е)",
 		"клубн(?:а|ий)\\s+(?:версія|мікс)",
@@ -409,7 +409,7 @@ const spacedLettersRegex = /(?<![\p{L}\p{N}.])\p{L}(?:(?: \p{L}){2,}|(?:\.\p{L})
  * "Song – Remix") and curly quotes, drop invisible characters (a zero width space inside "Remix"), turn lookalike
  * letters from other alphabets into Latin ones and join spaced out letters ("R E M I X").
  */
-export const normalize = (text: string | undefined | null) => {
+const normalize = (text: string | undefined | null) => {
 	text ??= "";
 	// Plain ASCII (most titles) only needs the last step
 	if (/[^\x00-\x7f]/.test(text)) {
@@ -439,12 +439,6 @@ const versionParts = (title: string) => {
 
 /** Splits parts on " - " and drops credits like "(feat. X)" */
 const usableParts = (parts: string[]) => parts.flatMap((part) => part.split(/\s-\s/)).filter((part) => part.trim() !== "" && !isCredit(part));
-
-/**
- * Pulls out the parts of a title that usually describe the version:
- * anything in brackets and anything after " - ". Credits like "(feat. X)" are skipped.
- */
-export const qualifierParts = (title: string): string[] => usableParts(versionParts(title).map((part) => part.text));
 
 /**
  * The remix word in one version part, e.g. "VIP" in "Song (VIP)" or "Kygo Edit" in "Song (Kygo Edit)".
@@ -516,5 +510,3 @@ export const remixMatch = (title: string | undefined | null, version: string | u
 	}
 	return undefined;
 };
-
-export const isRemix = (title: string | undefined | null, version: string | undefined | null, opts?: MatchOptions) => remixMatch(title, version, opts) !== undefined;

@@ -39,8 +39,9 @@ const ChoiceListSetting = ({ setting, title, desc }: { setting: "allowedIds" | "
 				setCount(0);
 				onSettingsChanged();
 			}}
-			children="Clear"
-		/>
+		>
+			Clear
+		</LunaButtonSetting>
 	);
 };
 

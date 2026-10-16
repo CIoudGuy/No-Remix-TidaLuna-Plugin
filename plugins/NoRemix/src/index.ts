@@ -236,6 +236,21 @@ const lookUp = async (itemId: redux.ItemId): Promise<string | undefined> => {
 	return undefined;
 };
 
+// Tracks TIDAL has no version for are fetched a few at a time, so a long queue isn't looked up one by one
+const PREFETCH_WIDTH = 4;
+let prefetchRun = 0;
+const prefetch = (elements: QueueElement[]) => {
+	const run = ++prefetchRun;
+	let next = 0;
+	const worker = async () => {
+		while (!unloaded && run === prefetchRun && next < elements.length) {
+			const id = elements[next++].mediaItemId;
+			if (verdictNow(id) === undefined) await verdict(id);
+		}
+	};
+	for (let i = 0; i < PREFETCH_WIDTH; i++) void worker();
+};
+
 /**
  * Call when settings change, forgets every verdict and re-checks the queue.
  */
@@ -730,8 +745,10 @@ const cleanOnce = async () => {
 	};
 
 	const { elements, currentIndex } = getQueue();
+	const upcoming = elements.slice(currentIndex + 1);
+	prefetch(upcoming);
 	let removals = 0;
-	for (const element of elements.slice(currentIndex + 1)) {
+	for (const element of upcoming) {
 		if (unloaded) return;
 		// Something changed that can't wait (e.g. you clicked a remix): start over so it's handled right away,
 		// but first line up the right next track if we just removed the one TIDAL had lined up

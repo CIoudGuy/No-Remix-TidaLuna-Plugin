@@ -143,9 +143,17 @@ const getMatchOptions = () =>
 		keepAnniversaryMixes: settings.keepAnniversaryMixes,
 	});
 
+// What was judged, by track, title and version: Tidalfast hands out a new copy of a stored track on every read
+const judged = new Map<string, string>();
 const judge = (info: TrackInfo, version = info.version) => {
-	const word = remixMatch(info.title, version, getMatchOptions()) ?? "";
-	if (word !== "") trace.log(`"${info.title}${version ? ` (${version})` : ""}" is a remix (matched "${word}")`);
+	const judgedKey = JSON.stringify([info.id, info.title, version ?? ""]);
+	let word = judged.get(judgedKey);
+	if (word === undefined) {
+		word = remixMatch(info.title, version, getMatchOptions()) ?? "";
+		if (word !== "") trace.log(`"${info.title}${version ? ` (${version})` : ""}" is a remix (matched "${word}")`);
+		if (judged.size > 20_000) judged.clear();
+		judged.set(judgedKey, word);
+	}
 	return word;
 };
 
@@ -259,6 +267,7 @@ export const onSettingsChanged = () => {
 	allowedIds = parseIds(settings.allowedIds);
 	remixIds = parseIds(settings.remixIds);
 	storeVerdicts = new WeakMap();
+	judged.clear();
 	fetchedVerdicts.clear();
 	scheduleClean();
 };
@@ -318,10 +327,13 @@ const wasLinedUp = (element: QueueElement) =>
 // Entries we removed, so ones another plugin puts back (e.g. RealMAX restoring an old copy of the queue) are removed quietly
 const removedUids = new Set<string>();
 // Entries we asked TIDAL to remove that are still there (it ignored us, or TIDAL Connect hasn't confirmed it yet),
-// not asked again for a while
-const pendingRemovals = new Map<string, number>();
-const RETRY_REMOVAL_MS = 30_000;
-const isRemovalIgnored = (element: QueueElement) => Date.now() - (pendingRemovals.get(element.uid) ?? -Infinity) < RETRY_REMOVAL_MS;
+// not asked again for a while: 30 seconds, then 2 minutes, 8 minutes and at most 10
+const pendingRemovals = new Map<string, { at: number; tries: number }>();
+const removalRetryDelay = (tries: number) => Math.min(30_000 * 4 ** (tries - 1), 10 * 60_000);
+const isRemovalIgnored = (element: QueueElement) => {
+	const pending = pendingRemovals.get(element.uid);
+	return pending !== undefined && Date.now() - pending.at < removalRetryDelay(pending.tries);
+};
 const forgetFinishedRemovals = (elements: QueueElement[]) => {
 	if (pendingRemovals.size === 0) return;
 	const present = new Set(elements.map((el) => el.uid));
@@ -346,12 +358,13 @@ const removeElement = (element: QueueElement) => {
 	const before = getQueue().elements.length;
 	redux.actions["playQueue/REMOVE_ELEMENT"]({ uid: element.uid });
 	if (getQueue().elements.length >= before) {
-		pendingRemovals.set(element.uid, now);
+		const tries = (pendingRemovals.get(element.uid)?.tries ?? 0) + 1;
+		pendingRemovals.set(element.uid, { at: now, tries });
 		// Try again later if it's still there
 		const retry = setTimeout(() => {
 			retryTimeouts.delete(retry);
 			scheduleClean();
-		}, RETRY_REMOVAL_MS + 100);
+		}, removalRetryDelay(tries) + 100);
 		retryTimeouts.add(retry);
 		// TIDAL ignored it (with TIDAL Connect it's removed once the server confirms)
 		if (!isRemote()) return;
@@ -737,11 +750,15 @@ const cleanOnce = async () => {
 	// the rest of the queue is cleaned after.
 	let settled = false;
 	let removedLinedUp = false;
-	const settle = () => {
+	// `goodIndex`: the first upcoming track that isn't a remix. Remixes still in front of it (TIDAL ignored their
+	// removal) are skipped over in one go.
+	const settle = (goodIndex?: number) => {
 		if (settled) return;
 		settled = true;
-		if (skipNow && isCurrent(current!)) skipCurrent(current!, false);
-		else if (removedLinedUp) relineUpNext();
+		if (skipNow && isCurrent(current!)) {
+			const skipTo = goodIndex !== undefined && goodIndex > getQueue().currentIndex + 1 ? goodIndex : undefined;
+			skipCurrent(current!, false, skipTo);
+		} else if (removedLinedUp) relineUpNext();
 	};
 
 	const { elements, currentIndex } = getQueue();
@@ -770,7 +787,7 @@ const cleanOnce = async () => {
 			return;
 		}
 		if (!word) {
-			settle();
+			settle(indexOf(element));
 			continue;
 		}
 		// The queue may have changed while we were looking it up, only remove what's still upcoming
